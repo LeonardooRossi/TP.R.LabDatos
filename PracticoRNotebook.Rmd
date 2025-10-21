@@ -1,0 +1,1026 @@
+---
+title: "Trabajo Practico R"
+author: "Leonardo Rossi"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+El setup general de este trabajo practico requiere que hagamos que sea
+reproducible, para esto pondremos un *set.seed()* para que se
+garantincen los mismos resultados. Vamos a además cargar las librerías que necesitaremos para este trabajo
+
+```{r setseed, echo=TRUE, message=FALSE}
+set.seed(111)
+library(tidyverse)
+library(scales)
+library(readr)
+library(dplyr)
+```
+
+# Ejercicio 1: Análisis de Daos
+
+Para este ejercicio teníamos más libertad acerca del tema a investigar.
+Yo decidí hacer una investigación en el ámbito del deporte, más
+específicamente, sobre futbol. Las tres preguntas que me plantee fueron:
+
+1.  ¿Cuál es la relación entre la edad de un jugador y el valor de
+    mercado?
+
+2.  ¿Cómo se distribuye el valor de mercado según la posición del
+    jugador?
+
+3.  ¿Cuáles son las 10 ligas con mayor valor de mercado total?
+
+Para esto, trabajamos sobre una base de datos que encontré en Kaggle,
+llamada *Football Data from Transfermarkt*, que está compuesta por
+varios archivos CSV con información de jugadores, clubes, valores de
+mercado y demás. De todos los archivos que componen este dataset, vamos
+a trabajar con 4 que consideré los esenciales para esta investigación,
+que contienen la información que mencioné previamente
+
+Lo primero que tenemos que hacer es cargar la librería y las bases de
+datos que utilizaremos para este ejercicio:
+
+```{r databases, echo=TRUE, message=FALSE}
+players <- read_csv("C:/Users/User/Downloads/players.csv", na = "")
+valuations <- read.csv("C:/Users/User/Downloads/player_valuations.csv", na = "")
+clubs <- read.csv("C:/Users/User/Downloads/clubs.csv", na = "")
+competitions <- read.csv("C:/Users/User/Downloads/competitions.csv", na = "")
+```
+
+Lo siguiente es hacer una inspección de los datos que tenemos, si hay
+NAs relevantes, que tipo de datos tenemos, y demás. Empezamos revisando
+el dataframe de jugadores
+
+```{r glimpse1, echo=TRUE}
+glimpse(players)
+```
+
+Vemos que por ejemplo para el dataframe *players* tenemos algunos NA en
+variables como el pie fuerte de los jugadores, la altura, o la fecha de
+expiración de contratos. Esto último nos señala que es un jugador que ya
+está retirado, más allá de eso, no son datos faltantes en variables con
+poder explicativo para nuestra investigación.
+
+Sin embargo, vemos que contamos con una columna de fecha de nacimiento,
+no de edad, por lo que vamos a tener que transformar el dataframe más
+adelante. Seguimos con el dataframe de valuaciones
+
+```{r glimpse2, echo=TRUE}
+glimpse(valuations)
+summary(valuations$market_value_in_eur)
+```
+
+En el dataframe *valuations*, que nos da los valores de mercado de los
+jugadores, no parece haber NAs, vemos que algunas variables que son
+fechas están categorizadas como numéricas y no como variables de tiempo,
+esto puede ser algo que tengamos que corregir más adelante. Luego, el
+dataframe de clubes
+
+```{r glimpse3, echo=TRUE}
+glimpse(clubs)
+```
+
+Vemos que las variables *total_market_value* de valor de mercado total y
+*coach_name* del nombre del director técnico no tienen información del
+todo, por lo que no los podremos tener en cuenta para nuestro análisis.
+Por último el dataframe de competiciones
+
+```{r glimpse4, echo=TRUE}
+glimpse(competitions)
+```
+
+Podemos ver que los NA que aparecen pertenecen a competiciones
+internaciones y no es que sean datos no disponibles sino que para esas
+variables no corresponden, es decir, está bien definido el dataframe.
+
+Antes de continuar, vamos a limpiar un poco el dataframe, ya que vamos a
+requerir de algunos joins más. Para esto vamos a quedarnos con solo las
+columnas que sabemos que vamos a necesitar y a renombrar algunas para
+evitar columnas con el mismo nombre después del join.
+
+```{r limpieza, echo=TRUE}
+players_clean <- players %>%
+  select(player_id,name,current_club_name,current_club_id,current_club_domestic_competition_id,date_of_birth,position)
+
+valuations_clean <- valuations %>%
+  select(player_id, date, market_value_in_eur) 
+
+valuations_clean <- valuations_clean %>%
+  rename(market_value_date = date)
+
+clubs_clean <- clubs %>%
+  select(club_id, name, domestic_competition_id)
+
+clubs_clean <- clubs_clean %>%
+  rename(club_name = name)
+
+
+competitions_clean <- competitions %>%
+  select(competition_id, name, type, country_name, domestic_league_code)
+
+competitions_clean <- competitions_clean %>%
+  rename(comp_name=name)
+```
+
+
+## Primera Pregunta
+
+La primera pregunta que queríamos resolver era cuál era la relación
+entre la edad de un jugador y su valor de mercado. Para esto vamos a
+tener que hacer un *left_join()* entre los dataframes de jugadores y de
+valuaciones:
+
+```{r leftjoin, echo=TRUE}
+  df_player_valuations <- players_clean %>%
+    left_join(valuations_clean, by= "player_id") 
+  
+  glimpse(df_player_valuations)
+```
+
+Ahora, aquí viene el problema de la columna de edad. Lo que vamos a
+hacer es calcular la edad de cada jugador no a día de hoy sino de cuando
+recibió una valuación en particular, para poder incluir en nuestro
+análisis a los jugadores que estén retirados, y por un tema de
+rigurosidad en la coherencia temporal.
+
+Calculamos las edades.
+
+```{r edad, echo=TRUE}
+df_player_valuations <- df_player_valuations %>%
+  mutate(
+    age_at_valuation = floor(time_length(interval(date_of_birth, market_value_date), "years"))
+  )
+
+df_player_valuations <- df_player_valuations %>%
+  filter(!is.na(age_at_valuation) & !is.na(market_value_in_eur))
+
+glimpse(df_player_valuations)
+```
+
+Como podemos ver, las primeras observaciones corresponden a un solo
+jugador y el valor de mercado fluctúa según la edad, eso es lo que
+  queríamos mostrar con este dataframe. Ahora podemos agrupar los datos
+  por edad y calcular el promedio de valor de mercado, una forma de ver
+  esto graficamente es usando *ggplot*
+
+```{r grafprimerapregunta, echo=TRUE}
+# Calculamos valor medio por edad 
+age_summary <- df_player_valuations %>%
+  group_by(age_at_valuation) %>%
+  summarise(mean_value = mean(market_value_in_eur, na.rm = TRUE))
+
+# Graficamos
+max_point <- age_summary %>%
+  slice_max(mean_value, n = 1)
+
+ggplot(age_summary, aes(x = age_at_valuation, y = mean_value / 1e6)) +
+  geom_line(color = "steelblue", size = 1) +
+  geom_point(data = max_point, aes(x = age_at_valuation, y = mean_value / 1e6),
+             color = "red", size = 3) +
+  geom_text(
+    data = max_point,
+    aes(
+      x = age_at_valuation,
+      y = mean_value / 1e6,
+      label = paste0("Pico: ", age_at_valuation, " años\n", round(mean_value / 1e6, 1), " M€")
+    ),
+    vjust = -1, color = "red", fontface = "bold", size = 3.5
+  ) +
+  labs(
+    title = "Valor de Mercado Promedio por Edad",
+    x = "Edad al momento de la valuacion",
+    y = "Valor promedio (millones de euros)",
+    caption = "Fuente: elaboracion propia con datos de Transfermarkt (Kaggle)"
+  ) +
+  theme_minimal()
+```
+
+Lo que podemos ver es que el valor de mercado promedio crece de forma
+acelerada durante los primeros años de carrera, alcanzando su punto
+máximo alrededor de los 25 años, momento en que los jugadores combinan
+experiencia y potencial de crecimiento. A partir de esa edad, el valor
+tiende a descender gradualmente, reflejando el envejecimiento deportivo
+y la pérdida de proyección futura. El leve aumento a edades avanzadas se
+explica por la presencia de algunos futbolistas excepcionales que
+prolongan su carrera más allá de lo habitual.
+
+## Segunda Pregunta
+
+Para esta pregunta queríamos explorar la relación entre el valor de
+mercado y la posición de jugador. Como vemos en el dataframe original
+teníamos dos categorías posicionales: *position* y *subposition*. Si
+quisieramos hacer el grafico tomando en cuenta las subposiciones serían
+demasiadas como para tener algo legible y ordenado. Así que vamos a
+trabajar tomando solo las posiciones generales, es decir, portero,
+defensa, medio y delantero
+
+Vamos a analizar esta información usando un boxplot para ver las medias,
+los cuartiles, los extremos y los outliers de nuestra data. Como hay
+mucho desvío en los valores de mercado (desde 100.000 hasta 180.000.000)
+vamos a usar una escala logarítmica, para que no se vea tan aplastada la
+información.
+
+```{r boxplot, echo=TRUE}
+df_player_valuations %>%
+  filter(!is.na(position) & !is.na(market_value_in_eur) & market_value_in_eur!=0 & position != "Missing") %>%
+  ggplot(aes(
+      # x: La posición. Usamos reorder() para ordenar las cajas
+      # por su valor mediano, de menor a mayor.
+      x = reorder(position, market_value_in_eur, FUN = median), 
+      y = market_value_in_eur,
+      
+      # fill: para colorear las cajas por posición
+      fill = position
+    )) +
+  geom_boxplot() + 
+  
+  # El 'labels = scales::dollar_format()' formatea los números como dinero (ej. $10M)
+  scale_y_log10(labels = scales::dollar_format(prefix = "€")) + 
+  
+  labs(
+    title = "Distribucion del Valor de Mercado por Posicion",
+    x = "Posicion General",
+    y = "Valor de Mercado (Escala Logaritmica)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none") # Quitamos la leyenda porque es redundante
+
+
+
+```
+
+Lo que podemos ver es que los porteros son los que en promedio tienen
+menor valor de mercado y que los mediocampistas son por poco la posición
+que mayor valor de mercado tiene en promedio, sin embargo, los
+delanteros parecieran tienen una mayor concentración de outliers. Por
+eso es que después vemos en delanteros valores de hasta 180 o 200
+millones de euros.
+
+## Tercera pregunta
+
+Por últimos queremos saber cuáles son las 10 ligas con mayor valor de
+promedio total. Lo más probable es que el top 5 sean las que
+popularmente se conocen como el "Big 5" que son las 5 ligas de mayor
+popularidad o visibilidad a nivel mundial, estas son:
+
+1.   Premier League (Inglaterra)
+
+2.  La Liga (españa)
+
+3.  Serie A (Italia)
+
+4.  Bundesliga (Alemania)
+
+5.  Ligue 1 (Francia)
+
+Queremos ver si podemos corrobar esto con los datos que tenemos y cuáles serán las 5 ligas cuyos jugadores tengan una mayor valuación de mercado total por fuera de este top 5.
+
+Lo primero que tenemos que hacer es la base de datos, podemos utilizar el dataframe que usamos para las preguntas anteriores, y les hacemos un _join()_ con las bases de datos de clubes y competiciones.
+
+```{r megajoin, echo=TRUE}
+df_completo <- df_player_valuations %>%
+  
+  # Unimos el df de clubes
+  left_join(clubs_clean, by = c("current_club_id" = "club_id")) %>%
+  
+  # Unimos el df de competiciones
+  left_join(competitions_clean, by = c("domestic_competition_id" = "competition_id"))
+
+
+glimpse(df_completo)
+```
+Ahora, si simplemente agrupamos las ligas por valor de mercado vemos que vamos a sumar varias observaciones para el mismo jugador, y adicionalmente vamos a mezclar jugadores recientes con jugadores retirados, lo que no tendría mucho sentido económicamente.Para tomar una "foto" de la temporada más reciente, vamos a usar la columna que de _market_value_date_. En lugar de filtrar por jugadores "activos", vamos a filtrar por valoraciones que ocurrieron en el año más reciente. Esto soluciona automáticamente el problema de los jugadores retirados, ya que estos no tendrán ninguna valoración en el último año.
+
+
+```{r topligas, echo=TRUE}
+
+# PASO 1: Calcular el valor de las ligas en el año más reciente
+
+# Vamos a encadenar todo en un solo pipe
+top_10_ligas_recientes <- df_completo %>%
+  
+  # 1. Convertimos la fecha 
+  mutate(market_value_date = ymd(market_value_date)) %>%
+  
+  # 2. Filtramos para quedarnos solo con el año más reciente.
+  # Esta línea filtra el dataframe para que solo incluya filas
+  # donde el año de 'market_value_date' sea igual al año MÁXIMO
+  # encontrado en toda la columna.
+  filter(year(market_value_date) == max(year(market_value_date), na.rm = TRUE)) %>%
+  
+  # 3. Nos aseguramos de tener solo UN valor por jugador
+  # (el más reciente de ESE año)
+  group_by(player_id) %>%
+  slice_max(order_by = market_value_date, n = 1, with_ties = FALSE) %>%
+  
+  # 4. Desagrupamos para poder agrupar de nuevo
+  ungroup() %>%
+  
+  # 5. Agrupamos por el nombre de la liga
+  group_by(comp_name) %>%
+  
+  # 6. Sumamos el valor de mercado
+  summarise(
+    valor_total_liga = sum(market_value_in_eur, na.rm = TRUE)
+  ) %>%
+  
+  # 7. Limpiamos ligas sin nombre o sin valor
+  filter(valor_total_liga > 0 & !is.na(comp_name)) %>%
+  
+  # 8. Ordenamos y tomamos el Top 10
+  arrange(desc(valor_total_liga)) %>%
+  head(10)
+
+# Imprime el resultado en la consola para verlo
+print(top_10_ligas_recientes)
+
+
+# PASO 2: Graficar el resultado 
+
+top_10_ligas_recientes %>%
+  ggplot(aes(
+    x = reorder(comp_name, valor_total_liga), 
+    y = valor_total_liga,
+    fill = comp_name
+  )) +
+  geom_col() +
+  coord_flip() + # Damos vuelta el gráfico
+  
+  # Formateamos los números del eje para que sean legibles
+  # 1e-9 = "miles de millones" (Billions)
+  scale_y_continuous(labels = dollar_format(prefix = "€", suffix = "B", scale = 1e-9)) +
+  
+  labs(
+    title = "Top 10 Ligas por Valor de Mercado Total",
+    x = "Liga",
+    y = "Valor de Mercado Total (en miles de millones de €)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+```
+
+
+
+# Ejercicio 2: Analisis Econometrico Parte 1
+
+## Inciso 1
+
+Empezamos cargando los datos de gapminder. 
+
+```{r Gapminder, echo=TRUE, message=FALSE, warning=FALSE}
+gapminder <- read_csv("C:/Users/User/Downloads/gapminder.csv", na = "")
+```
+
+Vamos a filtrar los datos para argentina
+
+```{R Arg, echo=TRUE}
+data_arg <- gapminder %>%
+  filter(country == "Argentina")
+
+glimpse(data_arg)
+```
+
+```{r Graf1, echo=TRUE}
+plot1 <- data_arg %>% 
+  filter(country == "Argentina") %>% 
+  ggplot(aes(x = year, y = income_per_person)) + 
+  geom_line(color="darkred") + 
+  labs(title="Evolución del Ingreso por persona en Argentina", x= "Año", y="Ingreso por persona") +
+  theme_minimal()
+
+
+plot1
+```
+
+El gráfico muestra que el ingreso por persona en Argentina tuvo una
+tendencia creciente a largo plazo entre 1960 y 2010, aunque con fuertes
+altibajos. Se observan varios períodos de crisis y recuperación,
+especialmente hacia fines de los 70, los 80 y principios de los 2000.
+
+Tras la crisis de 2001, el ingreso crece con fuerza, alcanzando su nivel
+más alto al final del período. En conjunto, el gráfico refleja una
+economía que logra crecer, pero con una alta volatilidad e inestabilidad
+macroeconómica.
+
+## Inciso 2
+
+Ahora queremos hacer un modelo de tratamiento y control (train-test,
+donde el entrenamiento son los últimos 10 años de los que tenemos datos
+para la argentina. Vamos a realizar regresiones de distintos modelos
+sobre la variable _income_per_person_. Empezamos con un modelo lineal $$
+y=\beta_0+\beta_1t+\varepsilon
+$$ Vamos a separar primero la base de datos del train y del test.
+
+```{r asignacion, echo=TRUE}
+data_train <- data_arg %>%
+  filter(year  >= max(year)-9)
+
+data_test <- data_arg %>%
+  filter(year < max(year)-9)
+```
+
+Ahora fitteamos el modelo
+
+```{r modelo1, include=TRUE}
+mod1 <- lm(income_per_person~year,  data=data_train)
+mod1
+```
+
+Seguido a esto, predecimos los resultados del modelo usando la base de
+datos data_test. Este es el que usaremos posteriormente para graficar
+
+```{r predict1, include=TRUE}
+pred1 <- predict(mod1, newdata=data_test)
+```
+
+Ahora, hacemos lo mismo pero con modelo polinomicos, el primero de grado
+2 y el segundo de grado 10. Fitteamos los modelos
+
+```{r modelo 2, include=TRUE}
+mod2 <- lm(income_per_person ~ poly(year, 2, raw=TRUE), data = data_train)
+mod2
+
+mod3 <- lm(income_per_person ~ poly(year, 10, raw=TRUE), data = data_train)
+
+```
+
+las precicciones seran
+
+```{r predict2, include=TRUE}
+pred2 <- predict(mod2, newdata=data_test)
+pred3 <- predict(mod3, newdata=data_test)
+
+```
+
+Representamos visualmente los 3 ajustes
+
+```{r Graf2, include=TRUE}
+
+# Crear cuadrícula de años (ordenada)
+grid_years <- data.frame(year = seq(min(data_arg$year), max(data_arg$year), by = 1))
+
+grid_years$pred1 <- predict(mod1,  newdata = grid_years)
+grid_years$pred2 <- predict(mod2,  newdata = grid_years)
+grid_years$pred3 <- predict(mod3,  newdata = grid_years)
+
+# Gráfico 1: lineal (puntos = train, curva = predicción)
+ggplot(data_train, aes(x = year, y = income_per_person)) +
+  geom_point(color="navyblue") +
+  geom_line(data = grid_years, aes(x = year, y = pred1), color="darkred") +
+  ggtitle("Modelo lineal (train) + predicción sobre la cuadrícula") + 
+  labs(x= "Año", y="Ingreso por persona") +
+  theme_minimal()
+
+# Gráfico 2: pol2
+ggplot(data_train, aes(x = year, y = income_per_person)) +
+  geom_point(color="navyblue") +
+  geom_line(data = grid_years, aes(x = year, y = pred2), color="darkred") +
+  ggtitle("Polinómico grado 2 (train) + predicción sobre la cuadrícula") + 
+  labs(x= "Año", y="Ingreso por persona") +
+  theme_minimal()
+
+# Gráfico 3: pol10
+ggplot(data_train, aes(x = year, y = income_per_person)) +
+  geom_point(color="navyblue") +
+  geom_line(data = grid_years, aes(x = year, y = pred3),color="darkred") +
+  ggtitle("Polinómico grado 10 (train) + predicción sobre la cuadrícula") + 
+  labs(x= "Año", y="Ingreso por persona")+
+  theme_minimal()
+
+```
+
+Lo que podemos ver es que el modelo lineal captura la tendencia general
+pero no las variaciones. El polinómico de grado 2 mejora el ajuste al
+permitir curvatura. Finalmente el modelo polinómico de grado 10 puede
+sobreajustar: se adapta demasiado a los datos de entrenamiento pero
+predice mal el test.
+
+## Inciso 3
+
+Vamos a elegir 4 países sudamericanos distintos de argentina para
+analizar sus correlaciones respecto al ingreso por persona. En este caso
+usaremos
+
+1.  Brasil
+
+2.  Chile
+
+3.  Colombia
+
+4.  Uruguay
+
+### Primer Apartado
+
+  Primero creamos un vector que incluya los nombres de los paises que
+  vamos a usar
+
+```{r paises, echo=TRUE}
+paises <- c("Argentina", "Brazil", "Chile", "Colombia", "Uruguay")
+```
+
+Ahora creamos la matriz de correlaciones
+
+```{r corr, echo=TRUE}
+
+matriz_cor <- gapminder %>%
+  filter(country %in% paises) %>%
+  arrange(year) %>%
+  select(country, year, income_per_person) %>%
+  pivot_wider(names_from = country, values_from = income_per_person) %>%
+  select(-year) %>%
+  cor(use = "pairwise.complete.obs")
+
+matriz_cor
+```
+
+### Segundo Apartado
+
+Ahora queremos hacer una matriz de correlaciones entre las variaciones
+porcentuales anuales de los ingresos. Para esto tenemos que calcular
+primero el crecimiento interanunal $$
+\frac{Y_t-Y_{t-1}}{Y_{t-1}} \times 100
+$$ Vamos a hacerlo agrupando los datos por país y usando el comando
+$lag()$
+
+```{r crec, echo=TRUE}
+mat_crec <- gapminder %>%
+  filter(country%in%paises) %>%
+  arrange(country,year) %>%
+  mutate(
+    growth = (income_per_person - lag(income_per_person)) / lag(income_per_person) * 100
+  ) %>%
+  select(country,year,growth) %>%
+  pivot_wider(names_from=country, values_from = growth) %>%
+  select(-year) %>%
+  cor(use="pairwise.complete.obs")
+  
+mat_crec
+
+```
+
+En la primera matriz (niveles), todas las correlaciones son muy altas (cercanas a 1), porque los ingresos de todos los países tienden a crecer en el tiempo y comparten una tendencia común. Esto muestra tendencias similares de largo plazo. En la segunda matriz (variaciones), las correlaciones son bastante menores, ya que las fluctuaciones anuales dependen de shocks específicos de cada país (crisis, políticas, tipo de cambio, etc.). Aquí se observa mayor independencia o asincronía entre economías.
+
+
+# Ejercicio 2: Análisis Econométrico Parte 2
+
+Para este ejercicio tenemos que filtrar los datos para un año en
+particular, por facilidad vamos a usar los datos del 2010.
+
+```{r 2010, echo=TRUE}
+data_2010 <- gapminder %>%
+  filter(year == "2010")
+
+glimpse(data_2010)
+```
+
+Podemos ver analizando los datos que hay que hacer un par de
+correciones. Primero, valores en las variables de *life_expectancy* que
+aparecen como $-999$ estos son valores faltantes que también vamos a
+querer excluir de nuestros análisis. Segundo, la columna de
+*life_expectancy_female* está categorizada como carácter y no de manera
+numérica
+
+```{r datafilter, echo=TRUE}
+data_filter <- data_2010 %>%
+  filter(life_expectancy_male != -999,
+         life_expectancy_female != -999)
+
+data_filter$life_expectancy_female <- as.numeric(data_filter$life_expectancy_female)
+
+```
+
+## Inciso 5
+
+Vamos a graficar las variables *life_expectancy* frente a
+*life_expectancy_female*.
+
+```{r Graf3, echo=TRUE, warning=FALSE}
+
+ggplot(data_filter, aes(x = life_expectancy_female, y = life_expectancy)) +
+  geom_point() +
+  labs(
+    x = "Esperanza de vida femenina",
+    y = "Esperanza de vida total",
+    title = "Relación entre esperanza de vida total y femenina (año 2010)"
+  ) +
+  theme_minimal()
+```
+
+El gráfico evidencia una fuerte relación positiva entre la esperanza de
+vida total y la esperanza de vida femenina. En general, las mujeres presentan una mayor esperanza de vida en todos los países analizado. Pareciera además que entre mayor es la esperanza de vida total, más correlación tiene con la esperanza de vida femenina xc 1d
+
+## Inciso 6
+
+Calculamos primero la regresión lineal
+
+```{r regresion, echo=TRUE}
+mod4 <- lm(life_expectancy ~ life_expectancy_female, data=data_filter)
+summary(mod4)
+```
+
+Usando el comando summary vemos que el $R^2$ es $0,8743$. Este
+coeficiente elevado implica que la esperanza de vida femenina es un muy
+buen predictor de la esperanza de vida total. Esto tiene sentido, ya que
+la esperanza de vida total es una combinación ponderada entre la
+femenina y la masculina.
+
+## Inciso 7
+
+Ahora vamos a realizar un contraste de las siguientes hipótesis:
+
+$$
+\begin{cases}
+H_0 : \textit{life_expectancy_female}=\textit{life_expectancy}\\
+H_1: \textit{life_expectancy_female} > \textit{life_expectancy}
+\end{cases}
+$$
+
+La mejor manera de trabajar con estas hipótesis es con la diferencia
+entre las expectativas de vida, ya que son dos variables que están
+emparejadas por pais. Hacemos primero la prueba $t$:
+
+```{r ttest, echo=TRUE}
+t_test <- t.test(data_filter$life_expectancy_female, 
+                 data_filter$life_expectancy, 
+                 alternative = "greater",
+                 paired=TRUE)
+
+t_test
+```
+
+Como el p-value es muy pequeño tenemos suficiente evidencia estadística
+para rechazar la hipótesis nula. En otras palabras, tenemos suficiente
+evidencia para decir que la esperanza de vida femenina es mayor
+
+## Inciso 8
+
+Ahora queremos hacer una regresión múltiple de *life_expectancy* sobre
+las variables *life_expectancy_female* e *income_per_person*. Primero
+corremos la regresión lineal simple:
+
+```{r regresion2, echo=TRUE}
+mod5 <- lm(life_expectancy ~ life_expectancy_female+income_per_person, data=data_filter)
+
+summary(mod5)
+```
+
+Podemos ver que al incluir el ingreso por persona, el $R^2$ aumenta solo
+muy ligeramente, esto nos dice que el ingreso también influye, pero una
+vez controlado por el nivel de vida de las mujeres, su aporte adicional
+es pequeño. Por tanto, sí mejora ligeramente el ajuste incluir
+*income_per_person*, pero no cambia sustancialmente la relación base.
+
+## Inciso 9
+
+El objetivo de este inciso es, partiendo de excluir la esperanza de vida
+de las mujeres, que ya vimos que tiene un gran aporte al poder
+explicativo de la esperanza de vida total, construir una regresión con 3
+variables explicativas que nos permita explicar la variable
+*life_expectancy*.
+
+Las 3 variables que elegiremos son:
+
+1.  *income_per_person*: nos puede ayudar a representar el nivel de
+    desarrollo económico individual. Esperamos un coeficiente positivo
+
+2.  *child_mortality*: nos ayuda a representar características de la
+    calidad del sistema de salud.
+
+3.  *is_oecd*: nos ayuda a representar características del desarrollo
+    institucional
+
+Corremos la regresión:
+
+```{r regresion3, echo=TRUE}
+mod6 <- lm(life_expectancy ~ income_per_person + child_mortality + is_oecd, data=data_filter) 
+summary(mod6)
+```
+
+Esto nos dice que estas 3 variables tienen el signo de coeficiente que
+esperábamos y nos ayudan a explicar una parte importante de la variable
+de *life_expectancy*, sin embargo el $R^2$ sigue siendo menor al que
+teníamos cuando usábamos como única variable explicativa la esperanza de
+vida femenina.
+
+# Ejercicio 3: Simulación Cobb-Douglas
+
+## Inciso 1
+
+Primero queremos crear una función que genere el ingreso mensual de un
+hogar $Y$ que siga una distribución $\chi^2_k$ con $k$ grados de
+libertad para un $n$ número de hogares
+
+```{r funcion, echo=TRUE}
+simular_ingreso <- function(n,k){
+  ingresos <- rchisq(n,df=k)
+  return(ingresos)
+}
+```
+
+Si elegimos un $k$ muy chico los ingresos seran muy desiguales, es decir
+tendremos una función con mucha densidad en las colas. En cambio, si
+tenemos un $k$ más elevado la distribución se vuelve más simétrica y los
+ingresos serán más parejos.
+
+## Inciso 2
+
+Ahora, una vez definidos los ingresos de los hogares queremos definir la
+función de la demanda de los hogares así como la utilidad indirecta.
+
+Sabemos que, como utilizaremos preferencias de la forma Cobb-Douglas, 
+
+$$
+U(x_1,x_2)=x_1^{\alpha_1}x_2^{\alpha_2}
+$$ 
+
+Con restricción presupuestaria: 
+
+$$
+p_1x_1+p_2x_2=Y
+$$ 
+
+Buscaremos resultados de la siguiente forma 
+$$
+\begin{align}
+x_1^*= \frac{\alpha_1 Y}{p_1}\,, \, &\hspace{4mm} x_2^*= \frac{\alpha_2Y}{p_2} \\
+U^* &=(x_1^*)^{\alpha_1}(x_2^*)^{\alpha_2}
+\end{align}
+$$
+
+Definimos la función:
+
+```{r funcion2}
+demanda_cd <- function(Y,p1,p2,alpha1,alpha2){
+  # Demandas
+  x1_opt <- (alpha1*Y)/p1
+  x2_opt <- (alpha2*Y)/p2
+  
+  # Utilidad indirecta
+  U_opt <- (x1_opt)^(alpha1)*(x2_opt)^(alpha2)
+  
+  return(data.frame(x1_opt,x2_opt,U_opt))
+}
+
+
+
+# Ejemplo
+Y <- simular_ingreso(5,k=25)
+demanda_cd(Y,5,3,0.4,0.6)
+```
+
+## Inciso 3
+
+Vamos a simular 10.000 hogares utilizando las funciones anteriormente
+definidas.
+
+```{r simulaciones, echo=TRUE}
+# Definimos los parametros
+n <- 10000
+k <- 25
+p1 <- 5
+p2 <- 2
+alpha1 <- 0.4
+alpha2 <- 0.6
+
+
+Y <- simular_ingreso(n,k)
+demandas <- demanda_cd(Y,p1,p2,alpha1,alpha2)
+
+# Histogramas
+par(mfrow=c(1,3))
+
+hist(demandas$x1_opt, breaks=40, main="Distribucion de x1*", xlab="x1*", col="skyblue", border="white")
+
+hist(demandas$x2_opt, breaks = 40, main = "Distribución de x2*", 
+     xlab = "x2*", col = "lightgreen", border = "white")
+
+hist(demandas$U_opt, breaks = 40, main = "Distribución de U*", 
+     xlab = "U*", col = "orange", border = "white")
+
+# Resumen estadisticas
+summary(demandas)
+
+```
+
+## Inciso 4
+
+Para este inciso vamos a querer definir una funcion que nos devuelve la
+probabilidad de que la demanda optima de alguno de los dos bienes
+(definido por nosotros), sea menor a un umbral arbitrario $c>0$.
+Empezamos definiendo la funcion:
+
+```{r funcion3, echo=TRUE}
+prob_bajo_consumo <- function(demandas, j, c){
+  
+  # Primero revisamos que j este bien definido
+  
+  if(j==1){
+    vector_demanda <- demandas$x1_opt
+  } else if(j==2){
+    vector_demanda <- demandas$x2_opt
+  } else{
+    stop("El indice debe ser 1 o 2")
+  }
+  
+  # Comparamos el vector de demandas con el parametro c
+  condicion <- vector_demanda < c
+  # Calculamos la media de la condicion
+  probabilidad <- mean(condicion)
+  
+  return(probabilidad)
+}
+
+
+# Ejemplo
+prob_prueba <- prob_bajo_consumo(demandas, j=1,c=2)
+prob_prueba
+
+```
+
+## Inciso 5
+
+Queremos simular un shock en el precio del bien 1. Lo primero que
+tenemos que hacer es deefinir el nuevo precio.
+
+```{r precioshock, echo=TRUE}
+p1_shock <- 1.2* p1
+
+```
+
+Ahora queremos repetir las simulaciones del inciso 3 con este nuevo
+precio
+
+```{r simulaciones2, echo=TRUE}
+demandas_shock <- demanda_cd(Y,p1_shock,p2,alpha1,alpha2)
+```
+
+Ahora queremos comparar las distribuciones antes y despues del shock,
+utilizamos el comando de summary en ambas demandas.
+
+```{r comp, echo=TRUE}
+print("Antes del shock: ")
+summary(demandas$x1_opt)
+
+
+print("Despues del shock: ")
+summary(demandas_shock$x1_opt)
+```
+
+Podemos ver que $x_1^*$ bajó con la suba del precio. Esto tiene sentido
+y era el resultado que esperábamos.
+
+## Inciso 6
+
+```{r histogramas, echo=TRUE}
+# Empezamos con el histograma previo al shock en azul
+hist(demandas$x1_opt, 
+     breaks = 40, 
+     col = rgb(0, 0, 1, 0.3),  
+     border = "white", 
+     main = "Comparación x1* (Antes vs. Después del Shock)", 
+     xlab = "Demanda del Bien 1 (x1*)",
+     ylab = "Densidad",
+     freq = FALSE,
+     ylim = c(0, 1.0)) 
+
+# Añadimos el histograma del shock en rojo
+hist(demandas_shock$x1_opt, 
+     breaks = 40, 
+     col = rgb(1, 0, 0, 0.3),  
+     border = "white", 
+     add = TRUE,               
+     freq = FALSE)
+
+# Añadimos una leyenda para que se entienda
+legend("topright", 
+       legend = c("Antes (p1=5)", "Después (p1=6)"), 
+       fill = c(rgb(0, 0, 1, 0.3), rgb(1, 0, 0, 0.3)))
+```
+
+Lo que podemos ver es que ahora hay una mayor concentración de hogares
+que compran menos, esto lo vemos en una mayor densidad cerca del 0 en el
+histograma rojo. Lo otro que queremos ver es que pasa con la utilidad
+indirecta, esto no está en el gráfico pero lo calculamos
+
+```{r utilidadpromedio, echo=TRUE}
+
+# Calculamos los dos promedios
+utilidad_antes <- mean(demandas$U_opt)
+utilidad_despues <- mean(demandas_shock$U_opt)
+
+# Creamos un dataframe para presentarlo 
+tabla_utilidad <- data.frame(
+  Utilidad_Promedio = c(utilidad_antes, utilidad_despues),
+  row.names = c("Antes del Shock (p1=5)", "Después del Shock (p1=6)")
+)
+
+tabla_utilidad
+
+
+```
+
+Lo que podemos ver es que el aumento del precio disminuye la utilidad
+promedio de los consumidores
+
+## Inciso 7
+
+En este inciso los hogares tienen preferencias heterogéneas, donde cada
+hogar toma $\alpha_1\sim Beta(a,b)$ y $\alpha_2=1-\alpha_1$. Lo primero
+que tenemos que hacer es redefinir las preferencias de los hogares.
+
+Como la media de una distribución Beta es $\frac{a}{a+b}$ algo lógico
+sería tomar $a=4$ y $b=6$ ya que nos va a dar, en promedio los mismos
+alfa y beta del caso homogéneo.
+
+```{r pref, echo=TRUE}
+a <- 4
+b <- 6
+
+alpha1_het <- rbeta(n,a,b)
+alpha2_het <- 1-alpha1_het
+```
+
+Una vez definidas las preferencias, podemos recalcular las demandas pre
+y post shock para los hogares heterogéneos.
+
+```{r simulacion3}
+demandas_het <- demanda_cd(Y,p1,p2,alpha1_het,alpha2_het)
+
+demandas_het_shock <- demanda_cd(Y,p1_shock,p2,alpha1_het,alpha2_het)
+```
+
+Nuestro objetivo es comparar este escenario con el caso base de
+preferencias sin heterogeneidad. La mejor forma de hacerlo es analizando
+como esta dispersión en las preferencias al consumo y a la sensibilidad
+sobre el shock.
+
+Tenemos calcular la desviación estándar para nuestros 4 escenarios (pre
+y post shock, distintas preferencias) y presentarla en una tabla para
+analizar posteriormente.
+
+```{r desvios, echo=TRUE}
+# Calculamos las 4 desviaciones estándar
+sd_homo <- sd(demandas$x1_opt)
+sd_homo_shock <- sd(demandas_shock$x1_opt)
+sd_het <- sd(demandas_het$x1_opt)
+sd_het_shock <- sd(demandas_het_shock$x1_opt)
+
+# Creamos el data.frame para comparar
+tabla_dispersion <- data.frame(
+  Caso_Base = c(sd_homo, sd_het),
+  Caso_Shock = c(sd_homo_shock, sd_het_shock),
+  row.names = c("1. Preferencias Homogéneas", "2. Preferencias Heterogéneas")
+)
+
+  
+tabla_dispersion
+
+```
+
+Podemos ver que en el caso base, ante distintos $\alpha_1$ introducir
+heterogeneidad en las preferencias hace que el consumo en la población
+sea, lógicamente, más diverso y disperso. Ya no todos reaccionan igual
+ante el mismo ingreso.
+
+Adicionalmente, podemos ver que
+
+$$
+\begin{cases}
+\text{caída homogénea} &=\, 0.0944 \\
+\text{caída heterogénea} &=\, 0.1592
+\end{cases}
+$$
+
+Es decir que ante la presencia de heterogeneidad en las preferencias,
+los consumidores son mucho más sensibles al shock del aumento del
+precio.
+
+Para terminar, vamos a querer comparar el gráfico que hicimos en el
+inciso anterior pero ahora con preferencias heterogéneas
+
+```{r histogramas2, echo=TRUE}
+
+hist(demandas_het$x1_opt, breaks = 40, col = rgb(0,0,1,0.3), border="white", 
+     main = "Comparación x1* (Caso HETEROGÉNEO)", xlab = "Demanda del Bien 1 (x1*)",
+     ylab = "Densidad", freq = FALSE, ylim = c(0, 1.0)) # Ajusta ylim si es necesario
+
+hist(demandas_het_shock$x1_opt, breaks = 40, col = rgb(1,0,0,0.3), border="white", 
+     add = TRUE, freq = FALSE)
+
+legend("topright", 
+       legend = c("Base (p1=5)", "Shock (p1=6)"), 
+       fill = c(rgb(0, 0, 1, 0.3), rgb(1, 0, 0, 0.3)))
+
+```
+
+Podemos ver que las distribuciones son parecidas al caso de preferencias
+homogéneas pero mucho más anchas y planas.
