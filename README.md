@@ -22,7 +22,7 @@ El script est escritos en R, en formato markdown, utiliza el paquete **tidyverse
 
 Los datos provienen del dataset público [**Football Data from Transfermarkt (Kaggle)**](https://www.kaggle.com/datasets/davidcariboo/player-scores).
 
-Para reproducir el análisis, descargar los siguientes archivos y colocarlos dentro de una carpeta `data/` en el directorio principal del proyecto:
+Para reproducir el análisis, descargar los siguientes archivos del dataset:
 
 - `players.csv`
 - `player_valuations.csv`
